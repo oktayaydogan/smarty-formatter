@@ -1,6 +1,6 @@
 {
-	"name": "smarty-template-support",
-	"displayName": "Smarty Template Support",
+	"name": "smarty-formatter",
+	"displayName": "Smarty Formatter",
 	"description": "Smarty template support with formatting, folding, snippets, syntax highlighting and more",
 	"author": {
 		"name": "Aswin Kumar",
@@ -10,7 +10,7 @@
 	"publisher": "aswinkumar863",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/aswinkumar863/smarty-vscode-support.git"
+		"url": "https://github.com/aswinkumar863/smarty-formatter.git"
 	},
 	"engines": {
 		"vscode": "^1.43.0"

@@ -1,14 +1,14 @@
 {
-	"name": "smarty-template-support",
-	"displayName": "Smarty Template Support",
+	"name": "smarty-formatter",
+	"displayName": "Smarty Formatter",
 	"description": "Smarty template support with formatting, folding, snippets, syntax highlighting and more",
 	"author": {
-		"name": "Aswin Kumar",
-		"email": "aswinkumar863@gmail.com"
+		"name": "Oktay Aydoğan",
+		"email": "aydoganooktay@gmail.com"
 	},
 	"license": "MIT",
-	"version": "2.1.1",
-	"publisher": "aswinkumar863",
+	"version": "2.1.2",
+	"publisher": "OktayAydoan",
 	"icon": "images/logo.png",
 	"galleryBanner": {
 		"color": "#BEAE3A",
@@ -16,10 +16,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/aswinkumar863/smarty-vscode-support.git"
-	},
-	"sponsor": {
-		"url": "https://ko-fi.com/aswinkumar863"
+		"url": "https://github.com/oktayaydogan/smarty-formatter.git"
 	},
 	"categories": [
 		"Programming Languages",
@@ -93,7 +90,7 @@
 		},
 		"configuration": {
 			"type": "object",
-			"title": "Smarty Template Support",
+			"title": "Smarty Formatter",
 			"properties": {
 				"smarty.highlight": {
 					"type": "boolean",
