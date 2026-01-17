@@ -78,6 +78,8 @@ export class BeautifySmarty {
 		let insideMultilineTag = false;
 		let lastTagIndent = "";
 		let insideScriptOrStyle = false;
+		let insideHtmlTagAttributes = false;
+        let attrIndentLevel = 0;
 
 
 		let indentStack: string[] = [];
@@ -93,23 +95,36 @@ export class BeautifySmarty {
 				insideScriptOrStyle = false;
 			}
 
+            // Check for HTML tag boundaries (to detect if we are inside attributes area)
+            // e.g. <div class="..."
+            // We want to detect if we are inside < ... > but NOT inside content.
+            // This is tricky with regex but heuristic: 
+            // - Starts with <tag (and not </tag) and DOES NOT end with > or /> 
+            // - OR we are already inside and it ends with > or />
+            
+            // Note: insideScriptOrStyle takes precedence.
+            if (!insideScriptOrStyle) {
+                if (!insideHtmlTagAttributes && trimmed.match(/^<[a-zA-Z0-9:-]+/) && !trimmed.match(/^<\//) && !trimmed.match(/>$/) && !trimmed.match(/\/>$/)) {
+                    insideHtmlTagAttributes = true;
+                    attrIndentLevel = 0; // Reset level when entering new tag
+                } else if (insideHtmlTagAttributes) {
+                    // Check if tag closes on this line. 
+                    // Be careful about attribute values containing >.
+                    // Simple heuristic: if line ends with > or />
+                    if (trimmed.match(/>$/) || trimmed.match(/\/>$/)) {
+                       insideHtmlTagAttributes = false;
+                       attrIndentLevel = 0; // Reset level when leaving tag
+                    }
+                }
+            }
+
 			// If inside script/style, skip Smarty specific logic but keep the line as is (from js-beautify)
 			if (insideScriptOrStyle) {
-				// Still check if we need to close a previously opened Smarty block from OUTSIDE the script?
-				// Unlikely. Just push the line. 
-				// NOTE: If Smarty buffer tags {capture} are used around script, indentStack might be active.
-				// We should probably apply base indent from stack if it exists?
+				// ... (script/style logic remains same)
 				if (indentStack.length > 0) {
 					const baseIndent = indentStack[indentStack.length - 1];
 					const minIndent = baseIndent + indent_char;
 					if (!currentIndent.startsWith(minIndent) && !currentIndent.startsWith(baseIndent)) {
-						// Only adjust if it looks under-indented relative to the Smarty block wrapping the script
-						// But usually js-beautify handles this if we passed the correct text.
-						// Let's trust js-beautify for the content of script tags relative to current indentation.
-						// However, if whole script is inside {if}, js-beautify output starts at 0 or 1 indent?
-						// It starts at 0 relative to processed text.
-						
-						// Safe bet: Apply AT LEAST formatting stack indent
 						if (!currentIndent.startsWith(baseIndent)) {
 							currentIndent = baseIndent + indent_char + currentIndent; // Add base indent
 							line = currentIndent + trimmed;
@@ -124,29 +139,57 @@ export class BeautifySmarty {
 			// 2. Detect if this line CLOSES a structural block (starts with it)
 			const endTagMatch = trimmed.match(/^{{?\s*\/(\w+)/);
 			if (endTagMatch && this.tags.end.has(endTagMatch[1])) {
-				indentStack.pop();
+                if (insideHtmlTagAttributes) {
+                    if (attrIndentLevel > 0) attrIndentLevel--;
+                } else {
+				    indentStack.pop();
+                }
 			}
 
 			// 3. Apply relative indentation from the stack
-			if (indentStack.length > 0) {
-				const baseIndent = indentStack[indentStack.length - 1];
-				const minIndent = baseIndent + indent_char;
-				if (!currentIndent.startsWith(minIndent)) {
-					if (currentIndent.startsWith(baseIndent)) {
-						currentIndent = baseIndent + indent_char + currentIndent.substring(baseIndent.length);
-					} else {
-						currentIndent = minIndent + currentIndent.trim();
-					}
-					line = currentIndent + trimmed;
-				}
+			if (insideHtmlTagAttributes) {
+                // Attribute Logic: Relative indentation based on level
+                if (attrIndentLevel > 0) {
+                     // Add extra indentation on top of current (js-beautify) indentation
+                     // But do NOT touch closing tags > or />
+                     if (trimmed !== '>' && trimmed !== '/>') {
+                         line = currentIndent + indent_char.repeat(attrIndentLevel) + trimmed;
+                     }
+                }
+            } else {
+                // Regular Logic: Absolute indentation based on stack
+                if (indentStack.length > 0) {
+                    // GUARD: If this line is just the closing of an HTML tag (> or />), 
+                    // do NOT apply the stack indentation. Let it align with the start tag (handled by js-beautify).
+                    if (trimmed !== '>' && trimmed !== '/>') {
+                        const baseIndent = indentStack[indentStack.length - 1];
+                        const minIndent = baseIndent + indent_char;
+                        if (!currentIndent.startsWith(minIndent)) {
+                            if (currentIndent.startsWith(baseIndent)) {
+                                currentIndent = baseIndent + indent_char + currentIndent.substring(baseIndent.length);
+                            } else {
+                                currentIndent = minIndent + currentIndent.trim();
+                            }
+                            line = currentIndent + trimmed;
+                        }
+                    }
+                }
 			}
 
 			// 4. Out-dent middle tags (else, elseif, etc.)
 			if (this.isMiddleTag(trimmed)) {
-				if (currentIndent.startsWith(indent_char)) {
-					currentIndent = currentIndent.substring(indent_char.length);
-					line = currentIndent + trimmed;
-				}
+                if (insideHtmlTagAttributes) {
+                    // For attributes, we just want to dedent one level relative to the content
+                    if (attrIndentLevel > 0) {
+                         // Remove one indent char if possible
+                         line = line.replace(indent_char, "");
+                    }
+                } else {
+                    if (currentIndent.startsWith(indent_char)) {
+                        currentIndent = currentIndent.substring(indent_char.length);
+                        line = currentIndent + trimmed;
+                    }
+                }
 			}
 
 			// 5. Handle structural tag transition and stack PUSH
@@ -156,7 +199,11 @@ export class BeautifySmarty {
 				
 				const startTagMatch = trimmed.match(/^{{?\s*(\w+)/);
 				if (startTagMatch && this.tags.start.has(startTagMatch[1])) {
-					indentStack.push(currentIndent);
+                    if (insideHtmlTagAttributes) {
+                        attrIndentLevel++;
+                    } else {
+					    indentStack.push(currentIndent);
+                    }
 				}
 				finalLines.push(line);
 			} else if (insideMultilineTag && (trimmed === '}' || trimmed === '}}' || (trimmed.endsWith('}') && !trimmed.includes('{')) || (trimmed.startsWith('{/') || trimmed.startsWith('{{/')))) {
@@ -171,11 +218,11 @@ export class BeautifySmarty {
 						if (!trimmed.endsWith('}') && !trimmed.endsWith('}}')) {
 							// Already handled by multiline logic above
 						} else {
-							// Check if it's a structural tag like {if ...} on one line
-							// We might still want to indent subsequent lines? 
-							// Actually, if it's on one line, js-beautify usually handles the content.
-							// But structural blocks usually span lines.
-							indentStack.push(currentIndent);
+                            if (insideHtmlTagAttributes) {
+                                attrIndentLevel++;
+                            } else {
+							    indentStack.push(currentIndent);
+                            }
 						}
 					}
 				}
