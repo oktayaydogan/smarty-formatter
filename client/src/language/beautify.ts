@@ -27,19 +27,6 @@ export class BeautifySmarty {
 	private smartyTags: string[] = [];
 
 	public beautify(docText: String, options: FormattingOptions): string {
-		const embeddedRegExp: RegExp = /(<(?:script|style)[\s\S]*?>)([\s\S]*?)(<\/(?:script|style)>)/g;
-		const smartyRegExp: RegExp = /^(?:\t| )*(.*{{?[^}\n\s]}?.*)$/gm;
-
-		// escape smarty literals in script and style
-		let isEscaped: boolean = false;
-		docText = docText.replace(embeddedRegExp, (match, start, content, end) => {
-			if (!content.trim()) {
-				return match;
-			}
-			isEscaped = true;
-			return start + content.replace(smartyRegExp, "/* beautify ignore:start */$1/* beautify ignore:end */") + end;
-		});
-
 		// preprocess smarty tags to pseudo-HTML
 		let processed = this.preprocess(docText as string);
 
@@ -242,11 +229,6 @@ export class BeautifySmarty {
 
 		let formatted = finalLines.join("\n").replace(/^[ \t]+$/gm, "");
 
-		// unescape smarty literals in script and style
-		if (isEscaped) {
-			formatted = formatted.replace(/\/\*\s+beautify\s+ignore:(start|end)\s+\*\//g, "");
-		}
-
 		return formatted;
 	}
 
@@ -438,10 +420,22 @@ export class BeautifySmarty {
 		let result = '';
 		let i = 0;
 		let pos = 0;
-		
-		// Phase 1: Tokenize ALL smarty tags to unique IDs with proper brace matching
+		let inScriptOrStyle = false; // Track context for correct comment type
+
+		// Phase 1: Tokenize smarty tags.
+        // Also convert {literal} tags to transparent comments so content parses as code.
 		while (pos < text.length) {
 			const char = text[pos];
+            
+            // Check for Script/Style start/end to determine context
+            if (char === '<') {
+                const remaining = text.substring(pos);
+                if (remaining.match(/^<(script|style)/i)) {
+                    inScriptOrStyle = true;
+                } else if (remaining.match(/^<\/(script|style)/i)) {
+                    inScriptOrStyle = false;
+                }
+            }
 			
 			// Check for start of Smarty tag
 			if (char === '{') {
@@ -457,15 +451,71 @@ export class BeautifySmarty {
 				}
 				
 				// Check if this looks like a Smarty tag
-				const afterBraces = text.substring(pos).match(/^\/?\w+/);
+				const afterBraces = text.substring(pos).match(/^(\/?\w+)/);
 				if (!afterBraces) {
 					// Not a Smarty tag, just output the braces
 					result += text.substring(braceStart, pos);
 					continue;
 				}
+
+                const tagName = afterBraces[1];
+
+                // HANDLING FOR LITERAL TAGS (Transparent Strategy)
+                if (tagName === 'literal' || tagName === '/literal') {
+                    // Find matching closing braces for this specific tag
+                    // Need to advance pos to scan for closing '}'
+                     let depth = braceCount;
+                     let tempPos = pos;
+                     let foundEnd = false;
+                     // Simple scan for closing braces since literal tags don't have nested complex attrs usually
+                     while (tempPos < text.length) {
+                         if (text[tempPos] === '}') {
+                             depth--;
+                             if (depth === 0) {
+                                  // Found end of tag
+                                  let closeBraceCount = 1;
+                                  while (tempPos + closeBraceCount < text.length && text[tempPos + closeBraceCount] === '}') {
+                                      closeBraceCount++;
+                                  }
+                                  tagEnd = tempPos + closeBraceCount;
+                                  foundEnd = true;
+                                  break;
+                             }
+                         } else if (text[tempPos] === '{') {
+                             depth++;
+                         }
+                         tempPos++;
+                     }
+
+                     if (foundEnd) {
+                         // We found the full {literal} or {/literal} tag.
+                         // Convert to comment based on context.
+                         const isStart = tagName === 'literal';
+                         const commentContent = isStart ? '___VSC_SMARTY_LITERAL_START___' : '___VSC_SMARTY_LITERAL_END___';
+                         
+                         let commentToken = "";
+                         if (inScriptOrStyle) {
+                             commentToken = `/* ${commentContent} */`;
+                         } else {
+                             commentToken = `<!-- ${commentContent} -->`;
+                         }
+                         
+                         result += commentToken;
+                         pos = tagEnd;
+                         continue;
+                     }
+                }
 				
 				// Find matching closing braces
-				let depth = braceCount;
+				let depth = braceCount; // Reset depth var name collision if sticking to previous logic
+                // Actually we reuse the logic below for normal tags
+				// ... (continuing standard logic)
+                
+                // Refactor: We need to run standard brace matching for non-literal tags
+                // Since I can't easily jump to "continue standard logic" in this tool block without rewriting large chunk:
+                
+                // Let's implement standard brace matching here for non-literal
+                 depth = braceCount;
 				while (pos < text.length && depth > 0) {
 					const c = text[pos];
 					
@@ -534,6 +584,12 @@ export class BeautifySmarty {
 			const tagMatch = originalTag.match(/^({+)(\/?)(\w+)([\s\S]*?)(}+)$/);
 			if (tagMatch) {
 				const [_, open, close, tag, content, end] = tagMatch;
+                
+                // CRITICAL: Prevent js-beautify from mangling literal tags by keeping them as tokens
+                if (tag === 'literal') {
+                    return `___VSC_SMARTY_TOKEN_INDEX_${index}___`;
+                }
+
 				if (this.tags.start.has(tag) || this.tags.end.has(tag)) {
 					if (close) {
 						return `</vsc-smarty-${tag}>`;
@@ -547,6 +603,12 @@ export class BeautifySmarty {
 	}
 
 	private postprocess(text: string): string {
+        // Restore transparent literal comments back to tags
+        // Handle both HTML comments <!-- ... --> and JS/CSS comments /* ... */
+        // We match liberally to catch any reformatting js-beautify might have done (spaces, newlines)
+        text = text.replace(/(?:<!--|\/\*)\s*___VSC_SMARTY_LITERAL_START___\s*(?:-->|\*\/)/g, '{literal}');
+        text = text.replace(/(?:<!--|\/\*)\s*___VSC_SMARTY_LITERAL_END___\s*(?:-->|\*\/)/g, '{/literal}');
+
 		// Phase 5: Clean tokens from beautifier-introduced whitespace
 		// Note: We don't un-wrap vsc-smarty pseudo-tags anymore to respect 
 		// the beautifier's wrapping decisions (force-expand-multiline).
@@ -568,7 +630,7 @@ export class BeautifySmarty {
                  }
             }
             return original;
-		}).replace(/<vsc-smarty-(?!tag)([^>\s]*)([^>]*)>/g, (match, tag, attrs) => {
+		}).replace(/<\s*vsc-smarty-(?!tag)([\w-]+)([\s\S]*?)>/g, (match, tag, attrs) => {
 			const openMatch = attrs.match(/data-smarty-open="([^"]*)"/);
 			const closeMatch = attrs.match(/data-smarty-close="([^"]*)"/);
 			const contentMatch = attrs.match(/data-smarty-content="([^"]*)"/);
@@ -578,7 +640,7 @@ export class BeautifySmarty {
 			
 			braceStack.push({ open, close });
 			return `${open}${tag}${content}${close}`;
-		}).replace(/<\/vsc-smarty-(?!tag)([^> ]*)>/g, (match, tag) => {
+		}).replace(/<\s*\/vsc-smarty-(?!tag)([\w-]+)\s*>/g, (match, tag) => {
 			const braces = braceStack.pop() || { open: "{", close: "}" };
 			return `${braces.open}/${tag}${braces.close}`;
 		});
