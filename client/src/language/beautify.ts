@@ -77,6 +77,7 @@ export class BeautifySmarty {
 		let finalLines: string[] = [];
 		let insideMultilineTag = false;
 		let lastTagIndent = "";
+		let insideScriptOrStyle = false;
 
 
 		let indentStack: string[] = [];
@@ -85,6 +86,39 @@ export class BeautifySmarty {
 			let indentMatch = line.match(/^([ \t]*)/);
 			let currentIndent = indentMatch ? indentMatch[0] : "";
 
+			// Check for script/style tag boundaries
+			if (trimmed.match(/^<(script|style)/i) && !trimmed.match(/<\/(script|style)>/i)) {
+				insideScriptOrStyle = true;
+			} else if (trimmed.match(/<\/(script|style)>/i)) {
+				insideScriptOrStyle = false;
+			}
+
+			// If inside script/style, skip Smarty specific logic but keep the line as is (from js-beautify)
+			if (insideScriptOrStyle) {
+				// Still check if we need to close a previously opened Smarty block from OUTSIDE the script?
+				// Unlikely. Just push the line. 
+				// NOTE: If Smarty buffer tags {capture} are used around script, indentStack might be active.
+				// We should probably apply base indent from stack if it exists?
+				if (indentStack.length > 0) {
+					const baseIndent = indentStack[indentStack.length - 1];
+					const minIndent = baseIndent + indent_char;
+					if (!currentIndent.startsWith(minIndent) && !currentIndent.startsWith(baseIndent)) {
+						// Only adjust if it looks under-indented relative to the Smarty block wrapping the script
+						// But usually js-beautify handles this if we passed the correct text.
+						// Let's trust js-beautify for the content of script tags relative to current indentation.
+						// However, if whole script is inside {if}, js-beautify output starts at 0 or 1 indent?
+						// It starts at 0 relative to processed text.
+						
+						// Safe bet: Apply AT LEAST formatting stack indent
+						if (!currentIndent.startsWith(baseIndent)) {
+							currentIndent = baseIndent + indent_char + currentIndent; // Add base indent
+							line = currentIndent + trimmed;
+						}
+					}
+				}
+				finalLines.push(line);
+				continue;
+			}
 
 
 			// 2. Detect if this line CLOSES a structural block (starts with it)
@@ -168,7 +202,7 @@ export class BeautifySmarty {
 			indent_inner_html: CONFIG.indentInnerHtml,
 			max_preserve_newlines: CONFIG.maxPreserveNewLines,
 			preserve_newlines: CONFIG.preserveNewLines,
-			wrap_line_length: CONFIG.wrapLineLength,
+			wrap_line_length: 0, // Disable js-beautify wrapping for HTML/JS
 			wrap_attributes: CONFIG.wrapAttributes,
 			brace_style: "collapse,preserve-inline",
 			jslint_happy: false,
@@ -187,11 +221,25 @@ export class BeautifySmarty {
 	private wrapLongTags(lines: string[], indent_char: string): string[] {
 		const wrapLineLength = CONFIG.wrapLineLength || 80;
 		const newLines: string[] = [];
+		let insideScriptOrStyle = false;
 
 		for (let line of lines) {
+			const trimmed = line.trim();
+			
+			// Check for script/style tag boundaries
+			if (trimmed.match(/^<(script|style)/i) && !trimmed.match(/<\/(script|style)>/i)) {
+				insideScriptOrStyle = true;
+			} else if (trimmed.match(/<\/(script|style)>/i)) {
+				insideScriptOrStyle = false;
+			}
+
+			if (insideScriptOrStyle) {
+				newLines.push(line);
+				continue;
+			}
+
 			const indentMatch = line.match(/^([ \t]*)/);
 			const indent = indentMatch ? indentMatch[0] : "";
-			const trimmed = line.trim();
 			const tagMatch = trimmed.match(/^({+)\s*(\w+)\s+(.*)(}+)$/);
 			if (tagMatch) {
 				const [_, leftBraces, tagName, content, rightBraces] = tagMatch;
