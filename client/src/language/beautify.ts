@@ -501,19 +501,56 @@ export class BeautifySmarty {
 		let i = 0;
 		let pos = 0;
 		let inScriptOrStyle = false; // Track context for correct comment type
+        let inTagDefinition = false; // Track if we are inside a tag definition < ... >
+        let inTagQuote = null; // Track quotes inside tag definition
 
 		// Phase 1: Tokenize smarty tags.
         // Also convert {literal} tags to transparent comments so content parses as code.
 		while (pos < text.length) {
 			const char = text[pos];
             
-            // Check for Script/Style start/end to determine context
-            if (char === '<') {
-                const remaining = text.substring(pos);
-                if (remaining.match(/^<(script|style)/i)) {
-                    inScriptOrStyle = true;
-                } else if (remaining.match(/^<\/(script|style)/i)) {
-                    inScriptOrStyle = false;
+            // Context Tracking Logic
+            if (!inScriptOrStyle) {
+                if (inTagDefinition) {
+                    if (inTagQuote) {
+                        if (char === inTagQuote && text[pos-1] !== '\\') {
+                            inTagQuote = null;
+                        }
+                    } else {
+                        if (char === '"' || char === "'") {
+                            inTagQuote = char;
+                        } else if (char === '>') {
+                            inTagDefinition = false;
+                        }
+                    }
+                } else {
+                    // Not in tag definition, look for start
+                    if (char === '<') {
+                        // Check if it's a script/style tag start
+                         const remaining = text.substring(pos);
+                         if (remaining.match(/^<(script|style)/i)) {
+                             inScriptOrStyle = true;
+                             // Script/style content starts after the tag definition closes (>).
+                             // But for our purpose, we can consider the whole block as script context logic mostly?
+                             // Actually, inScriptOrStyle usually implies we are IN the content.
+                             // But my existing logic sets it at '<script'.
+                             // Let's stick to existing logic for script/style.
+                         } else if (remaining.match(/^<\/(script|style)/i)) {
+                             // End of script/style
+                             inScriptOrStyle = false;
+                         } else {
+                             // Normal tag start
+                             inTagDefinition = true;
+                         }
+                    }
+                }
+            } else {
+                // Inside script/style
+                if (char === '<') {
+                     const remaining = text.substring(pos);
+                     if (remaining.match(/^<\/(script|style)/i)) {
+                         inScriptOrStyle = false;
+                     }
                 }
             }
 			
@@ -540,7 +577,7 @@ export class BeautifySmarty {
 
                 const tagName = afterBraces[1];
 
-                // HANDLING FOR LITERAL TAGS (Context-Aware Strategy)
+                // HANDLING FOR LITERAL TAGS (Advanced Context-Aware Strategy 2.0)
                 if (tagName === 'literal') {
                     // Smarty rules: literal blocks are NOT parsed. We must ignore all braces inside.
                     // Search for the next {/literal} tag.
@@ -567,20 +604,27 @@ export class BeautifySmarty {
                              const innerContent = text.substring(bodyStart, bodyEnd);
                              
                              if (inScriptOrStyle) {
-                                 // TRANSPARENT STRATEGY for JS/CSS
-                                 // Expose content to js-beautify, but mark start/end with comments
+                                 // Case 1: Script/Style Content -> Transparent JS Comments
                                  const startToken = "___VSC_LIT_START___";
                                  const endToken = "___VSC_LIT_END___";
                                  const commentStart = `/*${startToken}*/`;
                                  const commentEnd = `/*${endToken}*/`;
-                                 
                                  result += commentStart + innerContent + commentEnd;
-                             } else {
-                                 // OPAQUE STRATEGY for HTML
-                                 // Mask content completely to prevent js-beautify from collapsing/mangling it
+                             } else if (inTagDefinition) {
+                                 // Case 2: Inside Tag Definition (Attributes) -> Opaque Tokens (Masked)
+                                 // Hides content from js-beautify completely to protect attribute structure
                                  const index = this.processedLiterals.length;
                                  this.processedLiterals.push(innerContent);
                                  result += `___VSC_SMARTY_LITERAL_BLOCK_${index}___`;
+                             } else {
+                                  // Case 3: HTML Content -> Transparent HTML Comments
+                                  // Allows js-beautify to format internal HTML/Script
+                                  const startToken = "___VSC_LIT_START___";
+                                  const endToken = "___VSC_LIT_END___";
+                                  // Use standard HTML comments which js-beautify respects
+                                  const commentStart = `<!--${startToken}-->`;
+                                  const commentEnd = `<!--${endToken}-->`;
+                                  result += commentStart + innerContent + commentEnd;
                              }
                              
                              pos = closeTagEnd;
