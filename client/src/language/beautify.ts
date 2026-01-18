@@ -26,6 +26,7 @@ export class BeautifySmarty {
 	// Store processed tags for restoration
 	private smartyTags: string[] = [];
     private currentConfig: any = {};
+    private processedLiterals: string[] = [];
 
 	public beautify(docText: String, options: FormattingOptions): string {
 		// preprocess smarty tags to pseudo-HTML
@@ -495,6 +496,7 @@ export class BeautifySmarty {
 
 	private preprocess(text: string): string {
 		this.smartyTags = [];
+        this.processedLiterals = [];
 		let result = '';
 		let i = 0;
 		let pos = 0;
@@ -538,50 +540,56 @@ export class BeautifySmarty {
 
                 const tagName = afterBraces[1];
 
-                // HANDLING FOR LITERAL TAGS (Transparent Strategy)
-                if (tagName === 'literal' || tagName === '/literal') {
-                    // Find matching closing braces for this specific tag
-                    // Need to advance pos to scan for closing '}'
-                     let depth = braceCount;
-                     let tempPos = pos;
-                     let foundEnd = false;
-                     // Simple scan for closing braces since literal tags don't have nested complex attrs usually
-                     while (tempPos < text.length) {
-                         if (text[tempPos] === '}') {
-                             depth--;
-                             if (depth === 0) {
-                                  // Found end of tag
-                                  let closeBraceCount = 1;
-                                  while (tempPos + closeBraceCount < text.length && text[tempPos + closeBraceCount] === '}') {
-                                      closeBraceCount++;
-                                  }
-                                  tagEnd = tempPos + closeBraceCount;
-                                  foundEnd = true;
-                                  break;
+                // HANDLING FOR LITERAL TAGS (Context-Aware Strategy)
+                if (tagName === 'literal') {
+                    // Smarty rules: literal blocks are NOT parsed. We must ignore all braces inside.
+                    // Search for the next {/literal} tag.
+                    const remaining = text.substring(pos);
+                    const closeMatch = remaining.match(/\{+\s*\/literal\s*\}+/);
+                    
+                    if (closeMatch && closeMatch.index !== undefined) {
+                         // Find end of opening {literal}
+                         let currentOffset = afterBraces[0].length; 
+                         while (pos + currentOffset < text.length && text[pos + currentOffset] !== '}') {
+                             currentOffset++;
+                         }
+                         const openTagEnd = pos + currentOffset + 1;
+                         
+                         const bodyStart = openTagEnd;
+                         const bodyRemaining = text.substring(bodyStart);
+                         const closeTagMatch = bodyRemaining.match(/\{+\s*\/literal\s*\}+/);
+                         
+                         if (closeTagMatch && closeTagMatch.index !== undefined) {
+                             const bodyEnd = bodyStart + closeTagMatch.index;
+                             const closeTagEnd = bodyEnd + closeTagMatch[0].length;
+                             
+                             // We preserve the content exactly
+                             const innerContent = text.substring(bodyStart, bodyEnd);
+                             
+                             if (inScriptOrStyle) {
+                                 // TRANSPARENT STRATEGY for JS/CSS
+                                 // Expose content to js-beautify, but mark start/end with comments
+                                 const startToken = "___VSC_LIT_START___";
+                                 const endToken = "___VSC_LIT_END___";
+                                 const commentStart = `/*${startToken}*/`;
+                                 const commentEnd = `/*${endToken}*/`;
+                                 
+                                 result += commentStart + innerContent + commentEnd;
+                             } else {
+                                 // OPAQUE STRATEGY for HTML
+                                 // Mask content completely to prevent js-beautify from collapsing/mangling it
+                                 const index = this.processedLiterals.length;
+                                 this.processedLiterals.push(innerContent);
+                                 result += `___VSC_SMARTY_LITERAL_BLOCK_${index}___`;
                              }
-                         } else if (text[tempPos] === '{') {
-                             depth++;
+                             
+                             pos = closeTagEnd;
+                             continue;
                          }
-                         tempPos++;
-                     }
-
-                     if (foundEnd) {
-                         // We found the full {literal} or {/literal} tag.
-                         // Convert to comment based on context.
-                         const isStart = tagName === 'literal';
-                         const commentContent = isStart ? '___VSC_SMARTY_LITERAL_START___' : '___VSC_SMARTY_LITERAL_END___';
-                         
-                         let commentToken = "";
-                         if (inScriptOrStyle) {
-                             commentToken = `/* ${commentContent} */`;
-                         } else {
-                             commentToken = `<!-- ${commentContent} -->`;
-                         }
-                         
-                         result += commentToken;
-                         pos = tagEnd;
-                         continue;
-                     }
+                    }
+                } else if (tagName === '/literal') {
+                    // Start of loop handles {literal}, so {/literal} here is orphaned or parsed.
+                    // If we handled correctly, we skip past {/literal}.
                 }
 				
 				// Find matching closing braces
@@ -685,22 +693,64 @@ export class BeautifySmarty {
         const indent_size = this.currentConfig.indent_size || 4;
         const indent_char = this.currentConfig.indent_with_tabs ? "\t" : " ".repeat(indent_size);
 
-        // Restore transparent literal comments back to tags with EXTRA INDENTATION
-        // Capture block: START comment ... content ... END comment
-        // Regex allows for HTML (<!--) or JS (/*) style comments
-        const literalBlockRegex = /(?:<!--|\/\*)\s*___VSC_SMARTY_LITERAL_START___\s*(?:-->|\*\/)([\s\S]*?)(?:<!--|\/\*)\s*___VSC_SMARTY_LITERAL_END___\s*(?:-->|\*\/)/g;
+        // 1. Restore OPAQUE blocks (HTML Context)
+        if (this.processedLiterals.length > 0) {
+            text = text.replace(/([ \t]*)___VSC_SMARTY_LITERAL_BLOCK_(\d+)___/g, (match, indent, indexStr) => {
+                const index = parseInt(indexStr);
+                let innerContent = this.processedLiterals[index];
+                if (!innerContent) return "{literal}{/literal}";
+
+                // Clean up the content first
+                innerContent = innerContent.trim();
+
+                // If content is empty after trim
+                if (!innerContent) return "{literal}{/literal}";
+
+                // Determine effective indentation
+                // indent is the whitespace before the token (provided by js-beautify)
+                
+                // Split content into lines to handle multi-line literals properly
+                const contentLines = innerContent.split('\n');
+                
+                if (contentLines.length === 1) {
+                    // Single line content (common for attributes like data-bs-delay='...')
+                    // Format:
+                    // {literal}
+                    // content (aligned with literal)
+                    // {/literal}
+                    return `${indent}{literal}\n${indent}${innerContent}\n${indent}{/literal}`;
+                } else {
+                    // Multi-line content
+                    // Align each line with the block indent
+                    const indentedContent = contentLines.map(line => {
+                        const trimmedLine = line.trim();
+                        if (!trimmedLine) return "";
+                        return `${indent}${trimmedLine}`;
+                    }).join('\n');
+                    
+                    return `${indent}{literal}\n${indentedContent}\n${indent}{/literal}`;
+                }
+            });
+        }
+
+        // 2. Restore TRANSPARENT blocks (Script/Style Context)
+        // Regex allows for HTML (<!--) or JS (/*) style comments, OR raw tokens matches
+        // But since we enforced specific token types in preprocess, we mainly look for /* ... */ here.
+        
+        const startToken = "___VSC_LIT_START___";
+        const endToken = "___VSC_LIT_END___";
+        
+        const wrapperPattern = "(?:<!--|\\/\\*)?\\s*";
+        const wrapperEndPattern = "\\s*(?:-->|\\*\\/)?";
+        
+        const literalBlockRegex = new RegExp(`${wrapperPattern}${startToken}${wrapperEndPattern}([\\s\\S]*?)${wrapperPattern}${endToken}${wrapperEndPattern}`, 'g');
         
         text = text.replace(literalBlockRegex, (match, innerContent) => {
             if (!innerContent) return "{literal}{/literal}";
             
             // Add one level of indentation to the inner content
-            // innerContent contains lines largely indented by js-beautify.
-            // We just add indent_char to the start of each valid line.
-            
             const lines = innerContent.split('\n');
             const indentedLines = lines.map(line => {
-                // If the line is empty or just whitespace, don't necessarily indent it? 
-                // Usually editors handle empty lines by removing whitespace, but adding indent is safer for structure.
                 if (!line.trim()) return line; 
                 return indent_char + line;
             });
